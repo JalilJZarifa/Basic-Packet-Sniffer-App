@@ -1,0 +1,160 @@
+import tkinter as tk
+from tkinter import IntVar, END
+from threading import Thread
+from scapy.all import sniff, IP, TCP, UDP, ICMP, ARP, Raw
+import re
+from collections import Counter, defaultdict
+import socket
+
+class PacketSnifferApp:
+    def __init__(self, root):
+        self.root = root
+        root.title("Packet Sniffer")
+
+        # Packet display area
+        self.packet_display = tk.Text(root, height=20, width=100)
+        self.packet_display.pack()
+
+        # Scrollbar for packet display
+        self.scrollbar = tk.Scrollbar(root, command=self.packet_display.yview)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.packet_display['yscrollcommand'] = self.scrollbar.set
+
+        # Start/Stop Button
+        self.toggle_capture_button = tk.Button(root, text="Start Capture", command=self.toggle_packet_capture)
+        self.toggle_capture_button.pack()
+
+        # Port Label and Entry
+        self.port_label = tk.Label(root, text="Port:")
+        self.port_label.pack()
+        self.port_entry = tk.Entry(root)
+        self.port_entry.pack()
+
+        # Protocol RadioButtons
+        self.protocol_var = IntVar()
+        self.protocol_var.set(1)  # Default to TCP
+        self.tcp_radio = tk.Radiobutton(root, text="TCP", variable=self.protocol_var, value=1)
+        self.udp_radio = tk.Radiobutton(root, text="UDP", variable=self.protocol_var, value=2)
+        self.icmp_radio = tk.Radiobutton(root, text="ICMP", variable=self.protocol_var, value=3)
+        self.arp_radio = tk.Radiobutton(root, text="ARP", variable=self.protocol_var, value=4)
+        self.tcp_radio.pack()
+        self.udp_radio.pack()
+        self.icmp_radio.pack()
+        self.arp_radio.pack()
+
+        # Protocol counters
+        self.protocol_counters = {
+            "TCP": 0,
+            "UDP": 0,
+            "ICMP": 0,
+            "ARP": 0,
+        }
+
+        # Host counters
+        self.host_counter = Counter()
+        self.host_names = defaultdict(str)  # To store host names
+
+        # Captured packets
+        self.captured_packets = []
+
+        # Packet capture flag
+        self.capturing = False
+
+    def toggle_packet_capture(self):
+        if self.capturing:
+            self.capturing = False
+            self.toggle_capture_button.config(text="Start Capture")
+            self.display_statistics()
+        else:
+            self.capturing = True
+            self.toggle_capture_button.config(text="Stop Capture")
+            self.captured_packets.clear()  # Clear captured packets
+            capture_thread = Thread(target=self.capture_packets, daemon=True)
+            capture_thread.start()
+
+    def capture_packets(self):
+        def stop_sniffing(packet):
+            return not self.capturing
+
+        protocol = self.protocol_var.get()
+        port = self.port_entry.get()
+
+        if protocol == 1:  # TCP
+            filter_str = f"tcp port {port}"
+        elif protocol == 2:  # UDP
+            filter_str = f"udp port {port}"
+        elif protocol == 3:  # ICMP
+            filter_str = "icmp"
+        elif protocol == 4:  # ARP
+            filter_str = "arp"
+
+        self.packet_display.delete(1.0, END)  # Clear packet display
+        self.packet_display.insert(tk.END, f"Starting packet capture on port {port}...\n")
+
+        sniff(filter=filter_str, prn=self.packet_callback, stop_filter=stop_sniffing, store=False)
+
+    def packet_callback(self, packet):
+        if IP in packet:
+            ip_src = packet[IP].src
+            ip_dst = packet[IP].dst
+            self.update_protocol_counters(packet)
+            self.update_packet_display(packet)
+            if Raw in packet:
+                self.rate_raw_packet(packet[Raw].load)
+            if ip_src not in ["127.0.0.1", "0.0.0.0"]:
+                self.host_counter[ip_src] += 1
+                self.resolve_host_name(ip_src)
+            if ip_dst not in ["127.0.0.1", "0.0.0.0"]:
+                self.host_counter[ip_dst] += 1
+                self.resolve_host_name(ip_dst)
+
+    def update_protocol_counters(self, packet):
+        protocol = self.protocol_var.get()
+        if protocol == 1 and TCP in packet:
+            self.protocol_counters["TCP"] += 1
+        elif protocol == 2 and UDP in packet:
+            self.protocol_counters["UDP"] += 1
+        elif protocol == 3 and ICMP in packet:
+            self.protocol_counters["ICMP"] += 1
+        elif protocol == 4 and ARP in packet:
+            self.protocol_counters["ARP"] += 1
+
+    def update_packet_display(self, packet):
+        packet_info = f"{packet.summary()}\n"
+        self.packet_display.insert(tk.END, packet_info)
+        self.packet_display.see(tk.END)  # Auto-scroll
+
+    def rate_raw_packet(self, raw_data):
+        # Implement rating logic for RAW packets here (assign a rating from 1 to 5)
+        # You can update your own logic based on the content of the raw_data
+        pass
+
+    def resolve_host_name(self, ip_address):
+        try:
+            host_name = socket.gethostbyaddr(ip_address)[0]
+            self.host_names[ip_address] = host_name
+        except (socket.herror, socket.gaierror):
+            self.host_names[ip_address] = ip_address
+
+    def display_statistics(self):
+        # Display statistics (e.g., packet counts, top 5 hosts) in the GUI after capturing is complete
+        stats_text = "\nProtocol Counts:\n"
+        for protocol, count in self.protocol_counters.items():
+            stats_text += f"{protocol}: {count} packets\n"
+
+        stats_text += "\nTop 5 Hosts by IP:\n"
+        top_hosts = self.host_counter.most_common(5)
+        for host, count in top_hosts:
+            stats_text += f"{host}: {count} packets\n"
+
+        stats_text += "\nTop 5 Hosts by Name:\n"
+        top_host_names = sorted(self.host_names.items(), key=lambda x: x[1], reverse=True)[:5]
+        for host, name in top_host_names:
+            stats_text += f"{name} ({host}): {self.host_counter[host]} packets\n"
+
+        self.packet_display.insert(tk.END, stats_text)
+        self.packet_display.see(tk.END)  # Auto-scroll
+
+root = tk.Tk()
+app = PacketSnifferApp(root)
+root.mainloop()
